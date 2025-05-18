@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dataverse MCP Chatbot</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f6f8; margin: 0; padding: 40px; color: #333; display: flex; flex-direction: column; align-items: center; }
+    h2 { color: #1f2937; margin-bottom: 20px; }
+    #chatbox {
+      background: #fff;
+      width: 80%; /* Expanded width */
+      max-width: 800px;
+      height: 500px; /* Increased height */
+      border-radius: 10px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      padding: 20px;
+      overflow-y: auto;
+      margin-bottom: 20px;
+    }
+    .message { margin-bottom: 16px; }
+    .user strong { color: #2563eb; }
+    .bot strong { color: #10b981; }
+    .bot pre { background: #f3f4f6; padding: 12px; border-radius: 6px; font-size: 14px; white-space: pre-wrap; }
+    #inputSection {
+      display: flex;
+      width: 80%; /* Match chatbox width */
+      max-width: 800px;
+      gap: 12px;
+    }
+    #userInput { flex: 1; padding: 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 6px; }
+    button { background: #2563eb; color: #fff; border: none; padding: 12px 20px; border-radius: 6px; font-size: 16px; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #1e40af; }
+  </style>
+</head>
+<body>
+  <h2>PowerPlatform MCP Chatbot</h2>
+  <div id="chatbox"></div>
+  <div id="inputSection">
+    <input type="text" id="userInput" placeholder="Ask in natural language..." />
+    <button id="sendBtn">Send</button>
+  </div>
+
+  <script>
+    async function invokeTool(toolName, parameters) {
+      const resp = await fetch('http://localhost:3000/invoke', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ tool: toolName, parameters })
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    }
+
+    document.getElementById('sendBtn').addEventListener('click', sendMessage);
+    document.getElementById('userInput').addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
+
+    async function sendMessage() {
+      const inputEl = document.getElementById('userInput');
+      const chatbox = document.getElementById('chatbox');
+      const text = inputEl.value.trim();
+      if (!text) return;
+      appendMessage('user', `You: ${text}`);
+      inputEl.value = '';
+
+      try {
+        const { tool, parameters } = parseQuery(text);
+        appendMessage('bot', `Invoking: ${tool}`, JSON.stringify(parameters));
+        const result = await invokeTool(tool, parameters);
+        appendMessage('bot', 'Response:', result.output);
+      } catch (err) {
+        appendMessage('bot', 'Error:', err.message);
+      }
+      chatbox.scrollTop = chatbox.scrollHeight;
+    }
+
+    function appendMessage(role, title, msg='') {
+      const chatbox = document.getElementById('chatbox');
+      const el = document.createElement('div'); el.className = `message ${role}`;
+      if (role === 'bot') {
+        el.innerHTML = `<strong>${title}</strong><pre>${msg}</pre>`;
+      } else {
+        el.innerHTML = `<strong>${title}</strong>`;
+      }
+      chatbox.appendChild(el);
+    }
+
+    function parseQuery(text) {
+      const t = text.toLowerCase();
+      // Entity overview
+      if (t.includes('tell me about') || t.includes('show me information') || t.includes('give me an overview')) {
+        const entity = extractEntity(text);
+        if (!entity) throw new Error('Entity not recognized');
+        return { tool: 'use-powerplatform-prompt', parameters: { promptType: 'ENTITY_OVERVIEW', entityName: entity } };
+      }
+      // Metadata
+      if (t.includes('metadata')) {
+        const entity = extractEntity(text);
+        if (!entity) throw new Error('Entity not recognized');
+        return { tool: 'get-entity-metadata', parameters: { entityName: entity } };
+      }
+      // List fields
+      if (t.includes('list fields') || t.includes('fields in') || t.includes('fields of')) {
+        const entity = extractEntity(text);
+        if (!entity) throw new Error('Entity not recognized');
+        return { tool: 'get-entity-attributes', parameters: { entityName: entity } };
+      }
+      // Field details
+      if (t.includes('details of') && t.includes('field')) {
+        const entity = extractEntity(text);
+        const attr = extractAttribute(text);
+        if (!entity || !attr) throw new Error('Entity or attribute not recognized');
+        return { tool: 'get-entity-attribute', parameters: { entityName: entity, attributeName: attr } };
+      }
+      // Relationships
+      if (t.includes('relationship') || t.includes('relationships')) {
+        const entity = extractEntity(text);
+        if (!entity) throw new Error('Entity not recognized');
+        return { tool: 'get-entity-relationships', parameters: { entityName: entity } };
+      }
+      // Option set
+      if (t.includes('option set') || t.includes('values in')) {
+        const match = text.match(/(?:option set|values in) ([a-zA-Z0-9_]+)/i);
+        const name = match ? match[1] : null;
+        if (!name) throw new Error('Option set name not recognized');
+        return { tool: 'get-global-option-set', parameters: { optionSetName: name } };
+      }
+      // Get record
+      if (t.includes('fetch') || t.includes('get record') || t.includes('retrieve')) {
+        const idMatch = text.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+        const entity = extractEntity(text) + 's';
+        if (!idMatch) throw new Error('Record ID not recognized');
+        return { tool: 'get-record', parameters: { entityNamePlural: entity, recordId: idMatch[0] } };
+      }
+      // Query records
+      if (t.includes('find') || t.includes('filter') || t.includes('where')) {
+        const entity = extractEntity(text) + 's';
+        const filter = text.split(new RegExp(`${entity}`,'i')).pop().trim();
+        return { tool: 'query-records', parameters: { entityNamePlural: entity, filter, maxRecords: 50 } };
+      }
+      throw new Error('Could not interpret request');
+    }
+
+    function extractEntity(text) {
+      const entities = ['account','contact','lead','opportunity','quote','invoice','case'];
+      const lowered = text.toLowerCase();
+      return entities.find(e => lowered.includes(e));
+    }
+
+    function extractAttribute(text) {
+      const match = text.match(/field ([a-zA-Z0-9_]+)/i);
+      return match ? match[1] : null;
+    }
+  </script>
+</body>
+</html>
